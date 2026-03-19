@@ -1,129 +1,89 @@
-CREATE DATABASE ecomerce_db;
+CREATE DATABASE ecommerce_db;
+USE DATABASE ecommerce_db;
+--------------------------------------RAW LAYER---------------------------
+CREATE SCHEMA raw;
 
-create schema raw;
-
+-- FILE FORMAT
 CREATE OR REPLACE FILE FORMAT csv_format
 TYPE = 'CSV'
 FIELD_OPTIONALLY_ENCLOSED_BY = '"'
 SKIP_HEADER = 1;
 
+-- STAGE
 CREATE OR REPLACE STAGE my_stage
 FILE_FORMAT = csv_format;
 
-CREATE OR REPLACE TABLE orders_raw (
-    order_id INT,
-    customer_id INT,
-    order_date DATE,
-    promised_ship_date DATE,
-    order_value FLOAT,
-    item_count INT,
-    order_channel STRING,
-    priority_flag STRING,
-    status STRING
-);
-CREATE OR REPLACE TABLE customers_raw (
-    customer_id INT,
-    customer_name STRING,
-    email STRING,
-    phone STRING,
-    city STRING,
-    state STRING,
-    segment STRING,
-    registration_date DATE
-);
-CREATE OR REPLACE TABLE employees_raw (
-    employee_id INT,
-    name STRING,
-    role STRING,
-    shift_start DATE,
-    shift_end DATE,
-    hub_id INT,
-    join_date DATE,
-    status STRING
-);
-CREATE OR REPLACE TABLE inventory_raw (
-    inventory_id INT,
-    sku_id INT,
-    sku_name STRING,
-    category STRING,
-    on_hand_qty INT,
-    reserved_qty INT,
-    reorder_level INT,
-    last_restock_date DATE,
-    warehouse_id INT
+-- TABLES
+CREATE OR REPLACE TABLE raw.orders_raw (
+    order_id INT, customer_id INT, order_date DATE,
+    promised_ship_date DATE, order_value FLOAT,
+    item_count INT, order_channel STRING,
+    priority_flag STRING, status STRING
 );
 
-
-CREATE OR REPLACE TABLE events_raw (
-    event_id INT,
-    order_id INT,
-    employee_id INT,
-    event_type STRING,
-    event_time DATE,
-    remarks STRING
+CREATE OR REPLACE TABLE raw.customers_raw (
+    customer_id INT, customer_name STRING,
+    email STRING, phone STRING,
+    city STRING, state STRING,
+    segment STRING, registration_date DATE
 );
 
-SELECT COUNT(*) AS orders_count FROM raw.orders_raw;
+CREATE OR REPLACE TABLE raw.employees_raw (
+    employee_id INT, name STRING, role STRING,
+    shift_start DATE, shift_end DATE,
+    hub_id INT, join_date DATE, status STRING
+);
 
-SELECT COUNT(*) AS customers_count FROM raw.customers_raw;
+CREATE OR REPLACE TABLE raw.inventory_raw (
+    inventory_id INT, sku_id INT, sku_name STRING,
+    category STRING, on_hand_qty INT,
+    reserved_qty INT, reorder_level INT,
+    last_restock_date DATE, warehouse_id INT
+);
 
-SELECT COUNT(*) AS employees_count FROM raw.employees_raw;
+CREATE OR REPLACE TABLE raw.events_raw (
+    event_id INT, order_id INT, employee_id INT,
+    event_type STRING, event_time TIMESTAMP, remarks STRING
+);
 
-SELECT COUNT(*) AS inventory_count FROM raw.inventory_raw;
+-- LOAD DATA
+COPY INTO raw.orders_raw FROM @my_stage/orders_master.csv;
+COPY INTO raw.customers_raw FROM @my_stage/customers_master.csv;
+COPY INTO raw.employees_raw FROM @my_stage/employees_master.csv;
+COPY INTO raw.inventory_raw FROM @my_stage/inventory_master.csv;
+COPY INTO raw.events_raw FROM @my_stage/events_master.csv;
 
-SELECT COUNT(*) AS events_count FROM raw.events_raw;
-
-
----loading---------------
-COPY INTO raw.orders_raw
-FROM @my_stage/orders_master.csv
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE';
-
-COPY INTO raw.customers_raw
-FROM @my_stage/customers_master.csv
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE';
-
-COPY INTO raw.employees_raw
-FROM @my_stage/employees_master.csv
-FILE_FORMAT = csv_format;
-
-COPY INTO raw.inventory_raw
-FROM @my_stage/inventory_master.csv
-FILE_FORMAT = csv_format;
-
-COPY INTO raw.events_raw
-FROM @my_stage/events_master.csv
-FILE_FORMAT = csv_format;
-
-------------------------------------------------
+----------------------------VALIDATED LAYER-------------------------------
 CREATE SCHEMA validated;
 
-CREATE OR REPLACE STREAM raw.orders_stream ON TABLE raw.orders_raw;
-CREATE OR REPLACE STREAM raw.customers_stream ON TABLE raw.customers_raw;
-CREATE OR REPLACE STREAM raw.employees_stream ON TABLE raw.employees_raw;
-CREATE OR REPLACE STREAM raw.inventory_stream ON TABLE raw.inventory_raw;
-CREATE OR REPLACE STREAM raw.events_stream ON TABLE raw.events_raw;
+-- STREAMS
+CREATE STREAM raw.orders_stream ON TABLE raw.orders_raw;
+CREATE STREAM raw.customers_stream ON TABLE raw.customers_raw;
+CREATE STREAM raw.employees_stream ON TABLE raw.employees_raw;
+CREATE STREAM raw.inventory_stream ON TABLE raw.inventory_raw;
+CREATE STREAM raw.events_stream ON TABLE raw.events_raw;
 
+-- VALID TABLES
+CREATE OR REPLACE TABLE validated.orders_validated AS
+SELECT * FROM raw.orders_raw;
 
+CREATE OR REPLACE TABLE validated.customers_validated AS
+SELECT * FROM raw.customers_raw;
 
-CREATE OR REPLACE TABLE orders_validated LIKE raw.orders_raw;
-CREATE OR REPLACE TABLE orders_error LIKE raw.orders_raw;
+CREATE OR REPLACE TABLE validated.employees_validated AS
+SELECT * FROM raw.employees_raw;
 
-CREATE OR REPLACE TABLE customers_validated LIKE raw.customers_raw;
-CREATE OR REPLACE TABLE customers_error LIKE raw.customers_raw;
+CREATE OR REPLACE TABLE validated.inventory_validated AS
+SELECT * FROM raw.inventory_raw;
 
-CREATE OR REPLACE TABLE employees_validated LIKE raw.employees_raw;
-CREATE OR REPLACE TABLE employees_error LIKE raw.employees_raw;
+CREATE OR REPLACE TABLE validated.events_validated AS
+SELECT * FROM raw.events_raw;
 
-CREATE OR REPLACE TABLE inventory_validated LIKE raw.inventory_raw;
-CREATE OR REPLACE TABLE inventory_error LIKE raw.inventory_raw;
-
-CREATE OR REPLACE TABLE events_validated LIKE raw.events_raw;
-CREATE OR REPLACE TABLE events_error LIKE raw.events_raw;
-
-
+CREATE OR REPLACE TABLE validated.orders_error LIKE validated.orders_validated;
+CREATE OR REPLACE TABLE validated.customers_error LIKE validated.customers_validated;
+CREATE OR REPLACE TABLE validated.employees_error LIKE validated.employees_validated;
+CREATE OR REPLACE TABLE validated.inventory_error LIKE validated.inventory_validated;
+CREATE OR REPLACE TABLE validated.events_error LIKE validated.events_validated;
 
 CREATE OR REPLACE PROCEDURE validated.sp_load_validated()
 RETURNS STRING
@@ -133,55 +93,101 @@ $$
 BEGIN
 
 -- ORDERS
-INSERT INTO validated.orders_validated
-SELECT 
-    order_id, customer_id, order_date, promised_ship_date,
-    order_value, item_count, order_channel, priority_flag, status
-FROM raw.orders_stream
-WHERE METADATA$ACTION = 'INSERT';
+MERGE INTO validated.orders_validated tgt
+USING raw.orders_stream src
+ON tgt.order_id = src.order_id
+WHEN MATCHED THEN UPDATE SET
+    customer_id = src.customer_id,
+    order_date = src.order_date,
+    promised_ship_date = src.promised_ship_date,
+    order_value = src.order_value,
+    item_count = src.item_count,
+    order_channel = src.order_channel,
+    priority_flag = src.priority_flag,
+    status = src.status
+WHEN NOT MATCHED THEN INSERT VALUES (
+    src.order_id, src.customer_id, src.order_date,
+    src.promised_ship_date, src.order_value,
+    src.item_count, src.order_channel,
+    src.priority_flag, src.status
+);
 
 -- CUSTOMERS
-INSERT INTO validated.customers_validated
-SELECT 
-    customer_id, customer_name, email, phone,
-    city, state, segment, registration_date
-FROM raw.customers_stream
-WHERE METADATA$ACTION = 'INSERT';
+MERGE INTO validated.customers_validated tgt
+USING raw.customers_stream src
+ON tgt.customer_id = src.customer_id
+WHEN MATCHED THEN UPDATE SET
+    customer_name = src.customer_name,
+    email = src.email,
+    phone = src.phone,
+    city = src.city,
+    state = src.state,
+    segment = src.segment,
+    registration_date = src.registration_date
+WHEN NOT MATCHED THEN INSERT VALUES (
+    src.customer_id, src.customer_name, src.email,
+    src.phone, src.city, src.state,
+    src.segment, src.registration_date
+);
 
 -- EMPLOYEES
-INSERT INTO validated.employees_validated
-SELECT 
-    employee_id, name, role, shift_start,
-    shift_end, hub_id, join_date, status
-FROM raw.employees_stream
-WHERE METADATA$ACTION = 'INSERT';
+MERGE INTO validated.employees_validated tgt
+USING raw.employees_stream src
+ON tgt.employee_id = src.employee_id
+WHEN MATCHED THEN UPDATE SET
+    name = src.name,
+    role = src.role,
+    shift_start = src.shift_start,
+    shift_end = src.shift_end,
+    hub_id = src.hub_id,
+    join_date = src.join_date,
+    status = src.status
+WHEN NOT MATCHED THEN INSERT VALUES (
+    src.employee_id, src.name, src.role,
+    src.shift_start, src.shift_end,
+    src.hub_id, src.join_date, src.status
+);
 
 -- INVENTORY
-INSERT INTO validated.inventory_validated
-SELECT 
-    inventory_id, sku_id, sku_name, category,
-    on_hand_qty, reserved_qty, reorder_level,
-    last_restock_date, warehouse_id
-FROM raw.inventory_stream
-WHERE METADATA$ACTION = 'INSERT';
+MERGE INTO validated.inventory_validated tgt
+USING raw.inventory_stream src
+ON tgt.inventory_id = src.inventory_id
+WHEN MATCHED THEN UPDATE SET
+    sku_id = src.sku_id,
+    sku_name = src.sku_name,
+    category = src.category,
+    on_hand_qty = src.on_hand_qty,
+    reserved_qty = src.reserved_qty,
+    reorder_level = src.reorder_level,
+    last_restock_date = src.last_restock_date,
+    warehouse_id = src.warehouse_id
+WHEN NOT MATCHED THEN INSERT VALUES (
+    src.inventory_id, src.sku_id, src.sku_name,
+    src.category, src.on_hand_qty,
+    src.reserved_qty, src.reorder_level,
+    src.last_restock_date, src.warehouse_id
+);
 
 -- EVENTS
-INSERT INTO validated.events_validated
-SELECT 
-    event_id, order_id, employee_id,
-    event_type, event_time, remarks
-FROM raw.events_stream
-WHERE METADATA$ACTION = 'INSERT';
+MERGE INTO validated.events_validated tgt
+USING raw.events_stream src
+ON tgt.event_id = src.event_id
+WHEN MATCHED THEN UPDATE SET
+    order_id = src.order_id,
+    employee_id = src.employee_id,
+    event_type = src.event_type,
+    event_time = src.event_time,
+    remarks = src.remarks
+WHEN NOT MATCHED THEN INSERT VALUES (
+    src.event_id, src.order_id, src.employee_id,
+    src.event_type, src.event_time, src.remarks
+);
 
-RETURN 'DATA LOADED INTO VALIDATED';
-
+RETURN 'MERGE DONE';
 END;
 $$;
 
-CALL validated.sp_load_validated();
-
-
-CREATE OR REPLACE PROCEDURE validated.sp_clean_all()
+CREATE OR REPLACE PROCEDURE validated.sp_clean()
 RETURNS STRING
 LANGUAGE SQL
 AS
@@ -189,13 +195,28 @@ $$
 BEGIN
 
 ---------------------------------------------------
--- ORDERS VALIDATION
+-- 1. ORDERS DQ
 ---------------------------------------------------
-DELETE FROM validated.orders_validated
+
+-- INVALID ORDERS → ERROR TABLE
+INSERT INTO validated.orders_error
+SELECT *
+FROM validated.orders_validated
 WHERE order_id IS NULL
+   OR customer_id IS NULL
    OR order_value < 0
    OR item_count < 1
-   OR promised_ship_date < order_date;
+   OR promised_ship_date < order_date
+   OR order_value > 100000;
+
+-- DELETE INVALID
+DELETE FROM validated.orders_validated
+WHERE order_id IS NULL
+   OR customer_id IS NULL
+   OR order_value < 0
+   OR item_count < 1
+   OR promised_ship_date < order_date
+   OR order_value > 100000;
 
 ---------------------------------------------------
 -- REMOVE DUPLICATES (ORDERS)
@@ -210,14 +231,41 @@ WHERE order_id IN (
 );
 
 ---------------------------------------------------
--- CUSTOMERS
+-- 2. CUSTOMERS DQ
 ---------------------------------------------------
+
+INSERT INTO validated.customers_error
+SELECT *
+FROM validated.customers_validated
+WHERE customer_id IS NULL
+   OR email NOT LIKE '%@%';
+
 DELETE FROM validated.customers_validated
-WHERE customer_id IS NULL;
+WHERE customer_id IS NULL
+   OR email NOT LIKE '%@%';
 
 ---------------------------------------------------
--- EMPLOYEES
+-- REMOVE DUPLICATES (CUSTOMERS)
 ---------------------------------------------------
+DELETE FROM validated.customers_validated
+WHERE customer_id IN (
+    SELECT customer_id FROM (
+        SELECT customer_id,
+               ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY registration_date DESC) rn
+        FROM validated.customers_validated
+    ) WHERE rn > 1
+);
+
+---------------------------------------------------
+-- 3. EMPLOYEES DQ
+---------------------------------------------------
+
+INSERT INTO validated.employees_error
+SELECT *
+FROM validated.employees_validated
+WHERE employee_id IS NULL
+   OR shift_start > shift_end;
+
 DELETE FROM validated.employees_validated
 WHERE employee_id IS NULL
    OR shift_start > shift_end;
@@ -235,14 +283,23 @@ WHERE employee_id IN (
 );
 
 ---------------------------------------------------
--- INVENTORY
+-- 4. INVENTORY DQ
 ---------------------------------------------------
+
+INSERT INTO validated.inventory_error
+SELECT *
+FROM validated.inventory_validated
+WHERE on_hand_qty < 0
+   OR reserved_qty < 0
+   OR reserved_qty > on_hand_qty;
+
 DELETE FROM validated.inventory_validated
 WHERE on_hand_qty < 0
-   OR reserved_qty < 0;
+   OR reserved_qty < 0
+   OR reserved_qty > on_hand_qty;
 
 ---------------------------------------------------
--- SKU DUPLICATES
+-- REMOVE DUPLICATES (SKU)
 ---------------------------------------------------
 DELETE FROM validated.inventory_validated
 WHERE sku_id IN (
@@ -254,78 +311,101 @@ WHERE sku_id IN (
 );
 
 ---------------------------------------------------
--- EVENTS
+-- 5. EVENTS DQ
 ---------------------------------------------------
+
+INSERT INTO validated.events_error
+SELECT *
+FROM validated.events_validated
+WHERE event_type NOT IN ('pick','pack','qc','ship')
+   OR event_time IS NULL;
+
 DELETE FROM validated.events_validated
 WHERE event_type NOT IN ('pick','pack','qc','ship')
    OR event_time IS NULL;
 
 ---------------------------------------------------
--- REFERENTIAL CHECKS
+-- 6. REFERENTIAL INTEGRITY
 ---------------------------------------------------
 
--- Events → Orders
+-- EVENTS → ORDERS
 DELETE FROM validated.events_validated
 WHERE order_id NOT IN (
     SELECT order_id FROM validated.orders_validated
 );
 
--- Events → Employees
+-- EVENTS → EMPLOYEES
 DELETE FROM validated.events_validated
 WHERE employee_id NOT IN (
     SELECT employee_id FROM validated.employees_validated
 );
 
--- Orders → Customers
+-- ORDERS → CUSTOMERS
 DELETE FROM validated.orders_validated
 WHERE customer_id NOT IN (
     SELECT customer_id FROM validated.customers_validated
 );
 
 ---------------------------------------------------
--- TEMPORAL VALIDATION
+-- 7. TEMPORAL VALIDATION
 ---------------------------------------------------
+
+-- EVENT TIME SHOULD NOT BE FUTURE
 DELETE FROM validated.events_validated
 WHERE event_time > CURRENT_TIMESTAMP;
 
 ---------------------------------------------------
--- VALUE VALIDATION
+-- 8. DOMAIN VALIDATION
 ---------------------------------------------------
+
+-- STATUS CHECK
 DELETE FROM validated.orders_validated
-WHERE order_value > 100000;
-
-DELETE FROM validated.inventory_validated
-WHERE reserved_qty > on_hand_qty;
+WHERE status NOT IN ('created','processing','shipped','delivered','cancelled');
 
 ---------------------------------------------------
-RETURN 'ALL DATA VALIDATED & CLEANED';
+RETURN 'ALL DATA QUALITY CHECKS APPLIED';
 
 END;
 $$;
 
+CALL validated.sp_clean();
 
-CALL validated.sp_clean_all();
-SELECT COUNT(*) FROM validated.orders_validated;
-SELECT COUNT(*) FROM validated.customers_validated;
-SELECT COUNT(*) FROM validated.employees_validated;
-SELECT COUNT(*) FROM validated.inventory_validated;
-SELECT COUNT(*) FROM validated.events_validated;
 
-select count(*) from raw.inventory_raw;
+SELECT 'orders' AS table_name, COUNT(*) FROM validated.orders_validated
+UNION ALL
+SELECT 'customers', COUNT(*) FROM validated.customers_validated
+UNION ALL
+SELECT 'employees', COUNT(*) FROM validated.employees_validated
+UNION ALL
+SELECT 'inventory', COUNT(*) FROM validated.inventory_validated
+UNION ALL
+SELECT 'events', COUNT(*) FROM validated.events_validated;
 
-CREATE OR REPLACE TASK validated.clean_task
-WAREHOUSE = compute_wh
-SCHEDULE = '5 MINUTE'
-AS
-CALL validated.sp_clean_all();
+SELECT * FROM validated.orders_error LIMIT 10;
 
-ALTER TASK validated.clean_task RESUME;
+SELECT COUNT(*) 
+FROM raw.orders_raw
+WHERE promised_ship_date < order_date;
 
------------------------------------------------------------------------------------------------------
-CREATE SCHEMA curated;
+SELECT DISTINCT status FROM raw.orders_raw;
 
-CREATE OR REPLACE STREAM validated.customers_stream_curated
-ON TABLE validated.customers_validated;
+DELETE FROM validated.orders_validated
+WHERE LOWER(status) NOT IN ('open','created','processing','shipped','delivered','cancelled');
+
+UPDATE validated.orders_validated
+SET status = LOWER(status);
+
+CREATE OR REPLACE TABLE validated.orders_validated AS
+SELECT * FROM raw.orders_raw;
+
+select * from validated.orders_validated;
+
+CALL validated.sp_clean();
+
+----------------------------------------------------------------CURATED LAYER-----------------------------------------------
+
+
+CREATE SCHEMA  curated;
 
 CREATE OR REPLACE TABLE curated.dim_customers (
     customer_id INT,
@@ -361,31 +441,15 @@ AS
 $$
 BEGIN
 
----------------------------------------------------
--- STEP 0: READ STREAM ONCE + DEDUPLICATE
----------------------------------------------------
-CREATE OR REPLACE TEMP TABLE tmp_customers AS
-SELECT *
-FROM (
-    SELECT *,
-           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY registration_date DESC) rn
-    FROM validated.customers_stream_curated
-    WHERE METADATA$ACTION = 'INSERT'
-)
-WHERE rn = 1;
-
----------------------------------------------------
--- STEP 1: EXPIRE OLD RECORDS
----------------------------------------------------
+-- EXPIRE OLD RECORDS
 UPDATE curated.dim_customers tgt
 SET 
     end_date = CURRENT_DATE,
     current_flag = 'N'
-FROM tmp_customers src
+FROM validated.customers_validated src
 WHERE tgt.customer_id = src.customer_id
   AND tgt.current_flag = 'Y'
   AND (
-        tgt.customer_name <> src.customer_name OR
         tgt.email <> src.email OR
         tgt.phone <> src.phone OR
         tgt.city <> src.city OR
@@ -393,9 +457,7 @@ WHERE tgt.customer_id = src.customer_id
         tgt.segment <> src.segment
       );
 
----------------------------------------------------
--- STEP 2: INSERT NEW RECORDS
----------------------------------------------------
+-- INSERT NEW RECORDS
 INSERT INTO curated.dim_customers
 SELECT 
     src.customer_id,
@@ -408,13 +470,12 @@ SELECT
     CURRENT_DATE,
     NULL,
     'Y'
-FROM tmp_customers src
+FROM validated.customers_validated src
 LEFT JOIN curated.dim_customers tgt
 ON src.customer_id = tgt.customer_id
 AND tgt.current_flag = 'Y'
 WHERE tgt.customer_id IS NULL
    OR (
-        tgt.customer_name <> src.customer_name OR
         tgt.email <> src.email OR
         tgt.phone <> src.phone OR
         tgt.city <> src.city OR
@@ -422,24 +483,21 @@ WHERE tgt.customer_id IS NULL
         tgt.segment <> src.segment
       );
 
----------------------------------------------------
-RETURN 'SCD2 WORKING CORRECTLY';
+RETURN 'SCD2 COMPLETED';
 
 END;
 $$;
 
-CALL curated.sp_scd_customers();
+CREATE OR REPLACE TABLE curated.dim_employees AS
+SELECT employee_id, name, role, hub_id, status, join_date
+FROM validated.employees_validated;
 
-
-
-SELECT *
-FROM curated.dim_customers;
-
-
-
+CREATE OR REPLACE TABLE curated.dim_inventory AS
+SELECT inventory_id, sku_id, sku_name, category, warehouse_id
+FROM validated.inventory_validated;
 
 CREATE OR REPLACE TABLE curated.fact_orders AS
-SELECT
+SELECT 
     o.order_id,
     o.customer_id,
     c.customer_name,
@@ -454,11 +512,167 @@ JOIN curated.dim_customers c
 ON o.customer_id = c.customer_id
 AND c.current_flag = 'Y';
 
+CREATE OR REPLACE TABLE curated.fact_events AS
+SELECT 
+    event_id,
+    order_id,
+    employee_id,
+    event_type,
+    event_time
+FROM validated.events_validated;
+
+CALL curated.sp_scd_customers();
+
+SELECT * 
+FROM curated.dim_customers;
+
+---------------------------ANOMALY---------------
+CREATE OR REPLACE TABLE curated.order_anomalies (
+    anomaly_id INT AUTOINCREMENT,
+    order_id INT,
+    anomaly_type STRING,
+    reason STRING,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE OR REPLACE PROCEDURE curated.sp_detect_anomalies()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+
+---------------------------------------------------
+-- 1. SLA BREACH
+---------------------------------------------------
+INSERT INTO curated.order_anomalies (order_id, anomaly_type, reason)
+SELECT order_id,
+       'SLA_BREACH',
+       'Order not shipped on time'
+FROM validated.orders_validated
+WHERE status != 'shipped';
+
+---------------------------------------------------
+-- 2. QC FAILURE / MIS PICK
+---------------------------------------------------
+INSERT INTO curated.order_anomalies (order_id, anomaly_type, reason)
+SELECT order_id,
+       'QC_FAILURE',
+       'QC failed'
+FROM validated.events_validated
+WHERE event_type = 'qc'
+AND remarks ILIKE '%fail%';
+
+---------------------------------------------------
+-- 3. EVENT SEQUENCE ERROR
+---------------------------------------------------
+INSERT INTO curated.order_anomalies (order_id, anomaly_type, reason)
+SELECT order_id,
+       'SEQUENCE_ERROR',
+       'Wrong event flow'
+FROM (
+    SELECT order_id,
+           LISTAGG(event_type, '->') 
+           WITHIN GROUP (ORDER BY event_time) AS seq
+    FROM validated.events_validated
+    GROUP BY order_id
+)
+WHERE seq NOT LIKE 'pick->pack->qc->ship%';
+
+---------------------------------------------------
+-- 4. INVENTORY ISSUE
+---------------------------------------------------
+INSERT INTO curated.order_anomalies (order_id, anomaly_type, reason)
+SELECT NULL,
+       'INVENTORY_ISSUE',
+       'Stock mismatch'
+FROM validated.inventory_validated
+WHERE reserved_qty > on_hand_qty;
+
+RETURN 'ANOMALY DETECTED';
+
+END;
+$$;
+
+CALL curated.sp_detect_anomalies();
+
+SELECT * FROM curated.order_anomalies;
+
+______________SLA percentage---------------------------------------
+
+CREATE OR REPLACE TABLE curated.kpi_sla AS
+SELECT 
+    COUNT(*) total_orders,
+    COUNT(CASE WHEN status='shipped' THEN 1 END) shipped_orders,
+    ROUND(
+        COUNT(CASE WHEN status='shipped' THEN 1 END) 
+        / COUNT(*) * 100, 2
+    ) AS sla_percentage
+FROM curated.fact_orders;
+
+SELECT * FROM curated.kpi_sla;
+---------------------------------------THROUGH PUT-------------------------
+CREATE OR REPLACE TABLE curated.kpi_throughput AS
+SELECT 
+    DATE_TRUNC('hour', event_time) AS event_hour,
+    COUNT(*) total_events
+FROM curated.fact_events
+GROUP BY 1;
+
+SELECT * FROM curated.kpi_throughput;
+---------------------------------------------------INVENTORY KPI-------------
+CREATE OR REPLACE TABLE curated.kpi_inventory AS
+SELECT 
+    COUNT(*) total_items,
+    COUNT(CASE WHEN on_hand_qty >= reserved_qty THEN 1 END) available_items,
+    ROUND(
+        COUNT(CASE WHEN on_hand_qty >= reserved_qty THEN 1 END)
+        / COUNT(*) * 100, 2
+    ) availability_percentage
+FROM validated.inventory_validated;
+
+SELECT * FROM curated.kpi_inventory;
+-----------------------------------------------Employee Productivity----------------
+CREATE OR REPLACE TABLE curated.kpi_employee_productivity AS
+SELECT 
+    employee_id,
+    COUNT(*) AS total_events
+FROM curated.fact_events
+GROUP BY employee_id;
+
+SELECT * FROM curated.kpi_employee_productivity;
+-----------------------------------------------------ORDER FLOW COMPLETION-----------------------------------------------------
+CREATE OR REPLACE TABLE curated.kpi_order_flow AS
+SELECT 
+    COUNT(DISTINCT order_id) AS total_orders,
+
+    COUNT(DISTINCT CASE 
+        WHEN event_type = 'ship' 
+    THEN order_id END) AS completed_orders,
+
+    ROUND(
+        COUNT(DISTINCT CASE 
+            WHEN event_type = 'ship' 
+        THEN order_id END)
+        / COUNT(DISTINCT order_id) * 100,
+    2) AS completion_rate
+
+FROM curated.fact_events;
+
+SELECT * FROM curated.kpi_order_flow;
+
+-----------------------------------------Anamoly KPI----------------
+CREATE OR REPLACE TABLE curated.kpi_anomaly AS
+SELECT COUNT(*) total_anomalies
+FROM curated.order_anomalies;
+
+select * from curated.kpi_anomaly;
+
+-----------------------------------------------------------------DYNAMIC MASKING---------------------------------------------
 CREATE OR REPLACE MASKING POLICY mask_email
 AS (val STRING)
 RETURNS STRING ->
 CASE
-    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN val
+    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN','SECURITYADMIN') THEN val
     ELSE '****@' || SPLIT_PART(val, '@', 2)
 END;
 
@@ -479,14 +693,34 @@ ALTER COLUMN phone SET MASKING POLICY mask_phone;
 SELECT customer_name, email, phone
 FROM curated.dim_customers;
 
-------------------------------------------------------------------------------
+-------------------------------------------------Role level --------------------------------------------------------------------
 
-CREATE ROLE MANAGER_ROLE;
-CREATE ROLE WORKER_ROLE;
-CREATE ROLE QC_ROLE;
 CREATE ROLE ADMIN_ROLE;
+CREATE ROLE MANAGER_ROLE;
+CREATE ROLE QC_ROLE;
+CREATE ROLE WORKER_ROLE;
 
-CREATE OR REPLACE ROW ACCESS POLICY employee_policy
+GRANT USAGE ON DATABASE ecommerce_db TO ROLE ADMIN_ROLE;
+GRANT USAGE ON DATABASE ecommerce_db TO ROLE MANAGER_ROLE;
+GRANT USAGE ON DATABASE ecommerce_db TO ROLE QC_ROLE;
+GRANT USAGE ON DATABASE ecommerce_db TO ROLE WORKER_ROLE;
+
+GRANT USAGE ON ALL SCHEMAS IN DATABASE ecommerce_db TO ROLE ADMIN_ROLE;
+GRANT USAGE ON ALL SCHEMAS IN DATABASE ecommerce_db TO ROLE MANAGER_ROLE;
+GRANT USAGE ON ALL SCHEMAS IN DATABASE ecommerce_db TO ROLE QC_ROLE;
+GRANT USAGE ON ALL SCHEMAS IN DATABASE ecommerce_db TO ROLE WORKER_ROLE;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN DATABASE ecommerce_db TO ROLE ADMIN_ROLE;
+
+GRANT SELECT ON ALL TABLES IN DATABASE ecommerce_db TO ROLE MANAGER_ROLE;
+
+GRANT SELECT ON validated.events_validated TO ROLE QC_ROLE;
+GRANT SELECT ON curated.fact_events TO ROLE QC_ROLE;
+
+GRANT SELECT ON validated.events_validated TO ROLE WORKER_ROLE;
+GRANT SELECT ON curated.fact_orders TO ROLE WORKER_ROLE;
+
+CREATE OR REPLACE ROW ACCESS POLICY event_policy
 AS (event_type STRING)
 RETURNS BOOLEAN ->
 CASE
@@ -497,176 +731,12 @@ CASE
     ELSE FALSE
 END;
 
-
-CREATE OR REPLACE ROW ACCESS POLICY emp_role_policy
-AS (event_type STRING)
-RETURNS BOOLEAN ->
-CASE
-    WHEN CURRENT_ROLE() IN ('ADMIN_ROLE','MANAGER_ROLE') THEN TRUE
-    WHEN CURRENT_ROLE() = 'QC_ROLE' AND event_type = 'qc' THEN TRUE
-    WHEN CURRENT_ROLE() = 'WORKER_ROLE' AND event_type IN ('pick','pack') THEN TRUE
-    ELSE FALSE
-END;
-
 ALTER TABLE validated.events_validated
-ADD ROW ACCESS POLICY emp_role_policy ON (event_type);
+ADD ROW ACCESS POLICY event_policy ON (event_type);
 
-GRANT SELECT ON validated.events_validated TO ROLE ADMIN_ROLE;
-GRANT SELECT ON validated.events_validated TO ROLE MANAGER_ROLE;
-GRANT SELECT ON validated.events_validated TO ROLE QC_ROLE;
-GRANT SELECT ON validated.events_validated TO ROLE WORKER_ROLE;
-
-GRANT ROLE WORKER_ROLE TO USER HEMA2704;
-
-USE ROLE WORKER_ROLE;
-
+USE ROLE QC_ROLE;
 SELECT * FROM validated.events_validated;
 
-use role qc_role;
-
-GRANT ROLE QC_ROLE TO USER HEMA2704;
-
-GRANT ROLE MANAGER_ROLE TO USER HEMA2704;
-
-GRANT ROLE ADMIN_ROLE TO USER HEMA2704;
-
-GRANT ROLE worker_role TO USER HEMA2704;
-
-
-CREATE OR REPLACE TABLE curated.dim_employees AS
-SELECT
-    employee_id,
-    name,
-    role,
-    hub_id,
-    status,
-    join_date
-FROM validated.employees_validated;
-
-CREATE OR REPLACE TABLE curated.dim_inventory AS
-SELECT
-    inventory_id,
-    sku_id,
-    sku_name,
-    category,
-    warehouse_id
-FROM validated.inventory_validated;
-
-CREATE OR REPLACE TABLE curated.dim_date AS
-SELECT DISTINCT
-    order_date AS date,
-    YEAR(order_date) AS year,
-    MONTH(order_date) AS month,
-    DAY(order_date) AS day
-FROM validated.orders_validated;
-
-CREATE OR REPLACE TABLE curated.fact_orders AS
-SELECT
-    o.order_id,
-    o.customer_id,
-    o.order_date,
-    d.year,
-    d.month,
-    o.order_value,
-    o.item_count,
-    o.order_channel,
-    o.priority_flag,
-    o.status
-FROM validated.orders_validated o
-JOIN curated.dim_date d
-ON o.order_date = d.date;
-
-CREATE OR REPLACE TABLE curated.fact_events AS
-SELECT
-    event_id,
-    order_id,
-    employee_id,
-    event_type,
-    event_time
-FROM validated.events_validated;
-
-select * from fact_orders;
-
-INSERT INTO curated.fact_events (
-    event_id,
-    order_id,
-    employee_id,
-    event_type,
-    event_time
-)
-SELECT
-    event_id,
-    order_id,
-    employee_id,
-    event_type,
-    event_time
-FROM validated.events_validated;
-
-create or replace table validated.events_validated as select * from raw.events_raw;
-
-
-
-SELECT COUNT(*) AS dim_customers_count FROM curated.dim_customers;
-
-SELECT COUNT(*) AS dim_employees_count FROM curated.dim_employees;
-
-SELECT COUNT(*) AS dim_inventory_count FROM curated.dim_inventory;
-SELECT COUNT(*) AS fact_orders_count FROM curated.fact_orders;
-
-SELECT COUNT(*) AS fact_events_count FROM curated.fact_events;
-
-
-CREATE SCHEMA IF NOT EXISTS curated_kpi;
-CREATE OR REPLACE TABLE curated_kpi.kpi_sla_score AS
-SELECT 
-    CURRENT_DATE AS kpi_date,
-    COUNT(*) AS total_orders,
-    COUNT(CASE WHEN status = 'shipped' THEN 1 END) AS shipped_orders,
-    ROUND( COUNT(CASE WHEN status = 'shipped' THEN 1 END) 
-        / COUNT(*) * 100, 2
-    ) AS sla_percentage
-FROM curated.fact_orders;
-
-select * from curated_kpi.kpi_sla_score;
-----------------------------------------------------------EMPLOYEE PRODUCTIVITY-----------------------------------------
-CREATE OR REPLACE TABLE curated_kpi.kpi_throughput AS
-SELECT 
-    DATE_TRUNC('hour', event_time) AS event_hour,
-    COUNT(*) AS total_events
-FROM curated.fact_events
-GROUP BY 1;
-
-select * from curated_kpi.kpi_throughput;
-
---------------------------------------------------INVENTORY AVAILABILITY---------------------------------------
-
-CREATE OR REPLACE TABLE curated_kpi.kpi_inventory_availability AS
-SELECT 
-    CURRENT_DATE AS kpi_date,
-    COUNT(*) AS total_items,
-    COUNT(CASE WHEN on_hand_qty >= reserved_qty THEN 1 END) AS available_items,
-    ROUND(
-        COUNT(CASE WHEN on_hand_qty >= reserved_qty THEN 1 END)
-        / COUNT(*) * 100, 2
-    ) AS availability_percentage
-FROM validated.inventory_validated;
-
-select * from curated_kpi.kpi_inventory_availability;
----------------------------------------------ORDER ANAMOLIE RATE--------------------------------------------
-CREATE OR REPLACE TABLE curated_kpi.kpi_anomaly_rate AS
-SELECT 
-    CURRENT_DATE AS kpi_date,
-    COUNT(*) AS total_orders,
-    COUNT(CASE 
-        WHEN status NOT IN ('shipped','delivered') THEN 1 END) AS anomaly_orders,
-    ROUND(
-        COUNT(CASE 
-            WHEN status NOT IN ('shipped','delivered') THEN 1 END)
-        / COUNT(*) * 100, 2
-    ) AS anomaly_percentage
-FROM curated.fact_orders;
-
-
-
-
+USE ROLE WORKER_ROLE;
+SELECT * FROM validated.events_validated;
 
