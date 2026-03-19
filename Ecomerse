@@ -47,11 +47,35 @@ CREATE OR REPLACE TABLE raw.events_raw (
 );
 
 -- LOAD DATA
-COPY INTO raw.orders_raw FROM @my_stage/orders_master.csv;
-COPY INTO raw.customers_raw FROM @my_stage/customers_master.csv;
-COPY INTO raw.employees_raw FROM @my_stage/employees_master.csv;
-COPY INTO raw.inventory_raw FROM @my_stage/inventory_master.csv;
-COPY INTO raw.events_raw FROM @my_stage/events_master.csv;
+CREATE OR REPLACE PIPE raw.orders_pipe AS
+COPY INTO raw.orders_raw
+FROM @my_stage
+FILE_FORMAT = csv_format
+PATTERN = '.*orders_.*.csv';
+
+CREATE OR REPLACE PIPE raw.customers_pipe AS
+COPY INTO raw.customers_raw
+FROM @my_stage
+FILE_FORMAT = csv_format
+PATTERN = '.*customers_.*.csv';
+
+CREATE OR REPLACE PIPE raw.employees_pipe AS
+COPY INTO raw.employees_raw
+FROM @my_stage
+FILE_FORMAT = csv_format
+PATTERN = '.*employees_.*.csv';
+
+CREATE OR REPLACE PIPE raw.inventory_pipe AS
+COPY INTO raw.inventory_raw
+FROM @my_stage
+FILE_FORMAT = csv_format
+PATTERN = '.*inventory_.*.csv';
+
+CREATE OR REPLACE PIPE raw.events_pipe AS
+COPY INTO raw.events_raw
+FROM @my_stage
+FILE_FORMAT = csv_format
+PATTERN = '.*events_.*.csv';
 
 ----------------------------VALIDATED LAYER-------------------------------
 CREATE SCHEMA validated;
@@ -402,6 +426,19 @@ select * from validated.orders_validated;
 
 CALL validated.sp_clean();
 
+CREATE OR REPLACE TASK validated.load_task
+WAREHOUSE = compute_wh
+SCHEDULE = '5 MINUTE'
+AS
+CALL validated.sp_load_validated();
+
+CREATE OR REPLACE TASK validated.clean_task
+WAREHOUSE = compute_wh
+AFTER validated.load_task
+AS
+CALL validated.sp_clean();
+
+
 ----------------------------------------------------------------CURATED LAYER-----------------------------------------------
 
 
@@ -487,6 +524,12 @@ RETURN 'SCD2 COMPLETED';
 
 END;
 $$;
+
+CREATE OR REPLACE TASK curated.scd_task
+WAREHOUSE = compute_wh
+AFTER validated.clean_task
+AS
+CALL curated.sp_scd_customers();
 
 CREATE OR REPLACE TABLE curated.dim_employees AS
 SELECT employee_id, name, role, hub_id, status, join_date
@@ -593,6 +636,12 @@ RETURN 'ANOMALY DETECTED';
 END;
 $$;
 
+CALL curated.sp_detect_anomalies();
+
+CREATE OR REPLACE TASK curated.anomaly_task
+WAREHOUSE = compute_wh
+AFTER curated.scd_task
+AS
 CALL curated.sp_detect_anomalies();
 
 SELECT * FROM curated.order_anomalies;
@@ -740,3 +789,7 @@ SELECT * FROM validated.events_validated;
 USE ROLE WORKER_ROLE;
 SELECT * FROM validated.events_validated;
 
+ALTER TASK validated.load_task RESUME;
+ALTER TASK validated.clean_task RESUME;
+ALTER TASK curated.scd_task RESUME;
+ALTER TASK curated.anomaly_task RESUME;
